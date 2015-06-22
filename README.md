@@ -69,7 +69,7 @@ You need to have:
 
 1. Open a terminal and create a directory where you want to keep PASTA. e.g. `mkdir ~/pasta-code`. Go to this directory. e.g. `cd ~/pasta-code`.
 
-2. Clone the PASTA code repository from our [github repository](https://github.com/smirarab/pasta). For example you can use `git clone https://github.com/smirarab/pasta.git`.
+2. Clone the PASTA code repository from our [github repository](https://github.com/smirarab/pasta). For example you can use `git clone https://github.com/MGNute/pasta.git`.
 If you don't have git, you can directly download a [zip file from the repository](https://github.com/smirarab/pasta/archive/master.zip)
 and decompress it into your desired directory. 
 
