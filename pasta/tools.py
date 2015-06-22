@@ -238,8 +238,8 @@ class MafftAligner(Aligner):
         else:
             # invoc.extend([self.exe])
             invoc.extend([self.exe + '-qinsi'])
-        print invoc.join(' ')
-        
+        print ' '.join(invoc)
+
         if len(alignment) <= 200 and new_alignment.max_sequence_length() < 50000:
             invoc.extend(['--localpair', '--maxiterate', '1000'])
         if '--ep' not in self.user_opts:
