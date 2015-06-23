@@ -1,3 +1,6 @@
+*Nota Bene*: This repository is experimental and is forked from https://github.com/smirarab/pasta . Several changes have been made to this version of pasta, including (as of 6/23/15) a change so that the default MAFFT algorithm is MAFFT Q-Ins-I. No guarantees are made that this repo is bug free, and the main repo should be used by anyone not familiar with these changes.
+---
+
 This is an implementation of the PASTA (Practical Alignment using Sate and TrAnsitivity) algorithm published at [RECOMB-2014](http://link.springer.com/chapter/10.1007%2F978-3-319-05269-4_15#):
 
 Mirarab, S., Nguyen, N., & Warnow, T. (2014). PASTA: Ultra-Large Multiple Sequence Alignment. In R. Sharan (Ed.), Research in Computational Molecular Biology (RECOMB) (pp. 177–191).
