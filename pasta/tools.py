@@ -218,13 +218,13 @@ class CustomAligner(Aligner):
 class MafftAligner(Aligner):
     section_name = 'mafft aligner'
     url = 'http://align.bmr.kyushu-u.ac.jp/mafft/software'
-    # is_bundled = False #MN Changed
-    is_bundled = True
+    is_bundled = False #MN Changed
+    # is_bundled = True
 
     def __init__(self, temp_fs, **kwargs):
         Aligner.__init__(self, 'mafft', temp_fs, **kwargs)
-        # self.exe = 'mafft-qinsi' #MN Changed
-        self.exe = 'mafft' #MN Changed
+        self.exe = 'mafft-qinsi' #MN Changed
+        # self.exe = 'mafft' #MN Changed
 
     def create_job(self, alignment, guide_tree=None, **kwargs):
         job_id = kwargs.get('context_str', '') + '_mafft'
@@ -242,8 +242,8 @@ class MafftAligner(Aligner):
             invoc.extend([self.exe])
         print ' '.join(invoc)
 
-        if len(alignment) <= 200 and new_alignment.max_sequence_length() < 50000: #MN Commented Out
-            invoc.extend(['--localpair', '--maxiterate', '1000']) #MN Commented Out
+        # if len(alignment) <= 200 and new_alignment.max_sequence_length() < 50000: #MN Commented Out
+        #     invoc.extend(['--localpair', '--maxiterate', '1000']) #MN Commented Out
         if '--ep' not in self.user_opts:
             invoc.extend(['--ep', '0.123'])
         invoc.extend(['--quiet'])
