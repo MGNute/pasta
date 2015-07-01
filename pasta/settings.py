@@ -25,7 +25,7 @@ class PastaUserSettings(UserSettingsContainer):
         self._categories.append('sate')
         self.probalign = UserSettingGroup('probalign')
         self._categories.append('probalign')
-        self.probcons = UserSettingGroup('probcons')
+        self.probcons = UserSettingGroup('probcons') #this has to be the second argument of the __init__
         self._categories.append('probcons')        
         self.padaligner = UserSettingGroup('padaligner')
         self._categories.append('padaligner')
