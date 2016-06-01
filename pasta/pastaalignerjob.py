@@ -30,7 +30,7 @@ _LOG = get_logger(__name__)
 
 from pasta.treeholder import TreeHolder
 from pasta.scheduler import jobq, new_merge_event
-from pasta.scheduler import TickableJob
+from pasta.scheduler import TickableJob, PickleSafeTickableJob
 
 
 def bisect_tree(tree, breaking_edge_style='centroid'):
@@ -249,8 +249,9 @@ class PASTAAlignerJob(TreeHolder, TickableJob):
                 for taxa in self.tree.leaf_node_names():
                     self.pasta_team.subsets[taxa]=self
             else:
-                for aj in aj_list:
-                    jobq.put(aj)
+                if self.pasta_team.interruptible==False:
+                    for aj in aj_list:
+                        jobq.put(aj)
         else:
             _LOG.debug("%s...Recursing" % prefix)
             # create the subjobs
@@ -577,3 +578,199 @@ class PASTAMergerJob(PASTAAlignerJob):
     def postprocess(self):
         self.get_results()
         self.tick_praents()
+
+class PASTAInterruptibleAlignerJob(PASTAAlignerJob, PickleSafeTickableJob):
+    '''
+    designed to mimic the PASTA Aligner Job class but make it fully picklable and not worry about some of the same stuff
+    with respect to ticking parent jobs that is required becasue the alignments and merges are fully blocked by nature
+    of the interruption.
+    '''
+    def __init__(self, **kwargs):
+        PASTAAlignerJob.__init__(self,**kwargs)
+        self._merge_queued_event=None
+
+    def make_picklable(self):
+        PickleSafeTickableJob.make_picklable(self)
+        self._job_lock=None
+        if self.subjob1 is not None:
+            self.subjob1.make_picklable()
+        if self.subjob2 is not None:
+            self.subjob2.make_picklable()
+
+    def make_unpickled(self):
+        PickleSafeTickableJob.make_unpickled(self)
+        self._job_lock=Lock()
+        self._merge_queued_event=new_merge_event()
+        if self.subjob1 is not None:
+            self.subjob1.make_unpickled()
+        if self.subjob2 is not None:
+            self.subjob2.make_unpickled()
+
+
+    # def postprocess(self):
+    #     self.tick_praents()
+
+    # def on_dependency_ready(self):
+    #     ''' This is called when the "child" jobs are finished.
+    #     If self is a "alignment" subproblem, we just need to tick the parent job(s).
+    #     If self is a "merge" subproblem, the first time all dependencies are met
+    #     is when the children jobs finish. At this point, the actual merge job
+    #     is started and queued, and that new merge job is added as a child of self.
+    #     Now, when this new "merge" job finishes, self is completed, and we need
+    #     to tick the parent(s).'''
+    #     #_LOG.debug("Dependency ready!")
+    #     if self.killed:
+    #         raise RuntimeError("PastaAligner Job killed")
+    #     if not self.align_job_list:
+    #         if not self.merge_job_list:
+    #             assert self.subjob1 and self.subjob2
+    #             if not self.skip_merge:
+    #                 self._start_merger()
+    #                 return
+    #     self.postprocess()
+
+
+    # def _start_merger(self):
+    #     '''Blocks until the two "subjobs" are done
+    #     (with new implementation, they will be done, before this is even called)
+    #         creates the merger job and puts it in the jobs queue,
+    #         cleans up the alignment subdirectories,
+    #         signals an event that signifies the fact that the merge job is on queue,
+    #         and then returns.
+    #
+    #     Called by wait()
+    #     '''
+    #     self._merge_queued_event=new_merge_event()
+    #     PASTAAlignerJob._start_merger(self)
+
+    def launch_alignment(self, tree=None, break_strategy=None, context_str=None):
+        '''Puts a alignment job(s) in the queue and then return None
+
+        get_results() must be called to get the alignment. Note that this call
+        may not be trivial in terms of time (the tree will be decomposed, lots
+        of temporary files may be written...), but the call does not block until
+        completion of the alignments.
+        Rather it queues the alignment jobs so that multiple processors can be
+        exploited if they are available.
+        '''
+        if self.killed:
+            raise RuntimeError("PastaAligner Job killed")
+
+        if break_strategy is not None:
+            self.break_strategy = break_strategy
+        break_strategy = self.break_strategy
+        if tree is not None:
+            self.tree = tree
+        self.expected_number_of_taxa = self.multilocus_dataset.get_num_taxa() # for debugging purposes
+        self._reset_jobs()
+        prefix = "self.multilocus_dataset.get_num_taxa = %d" % self.expected_number_of_taxa
+        self.context_str = context_str
+        if self.context_str is None:
+            self.context_str = ''
+        _LOG.debug("Comparing expected_number_of_taxa=%d and max_subproblem_size=%d\n" % (self.expected_number_of_taxa,  self.max_subproblem_size))
+        if self.expected_number_of_taxa <= self.max_subproblem_size:
+            _LOG.debug("%s...Calling Aligner" % prefix)
+            aj_list = []
+            for index, single_locus_sd in enumerate(self.multilocus_dataset):
+                aj = self.pasta_team.aligner.create_job(single_locus_sd,
+                                                       tmp_dir_par=self.tmp_dir_par,
+                                                       delete_temps=self.delete_temps,
+                                                       context_str=self.context_str + " align" + str(index))
+                aj.add_parent_tickable_job(self)
+                self.add_child(aj)
+
+                aj_list.append(aj)
+                if self.killed:
+                    raise RuntimeError("PastaAligner Job killed")
+
+                self.pasta_team.alignmentjobs.append(aj)
+
+            self.align_job_list = aj_list
+
+            if self.skip_merge:
+                for taxa in self.tree.leaf_node_names():
+                    self.pasta_team.subsets[taxa]=self
+            # else:
+            #     if self.pasta_team.interruptible==False:
+            #         for aj in aj_list:
+            #             jobq.put(aj)
+        else:
+            _LOG.debug("%s...Recursing" % prefix)
+            # create the subjobs
+            self.subjob1, self.subjob2 = self.bipartition_by_tree(break_strategy)
+            # store this dir so we can use it in the merger
+            if self.killed:
+                raise RuntimeError("PastaAligner Job killed")
+
+            self.subjob1.add_parent(self)
+            self.subjob2.add_parent(self)
+            self.add_child(self.subjob1)
+            self.add_child(self.subjob2)
+
+            self.subjob1.launch_alignment(break_strategy=break_strategy)
+            if self.killed:
+                raise RuntimeError("PastaAligner Job killed")
+            self.subjob2.launch_alignment(break_strategy=break_strategy)
+            if self.killed:
+                raise RuntimeError("PastaAligner Job killed")
+        return
+
+    def bipartition_by_tree(self, option):
+        '''
+        THIS ONE STAYS FOR NOW (SEE TODO) -mn
+        '''
+        _LOG.debug("tree before bipartition by %s = %s ..." % (option, self.tree.compose_newick()[0:200]))
+
+        tree1, tree2 = bisect_tree(self.tree, breaking_edge_style=option)
+        assert tree1.n_leaves > 0
+        assert tree2.n_leaves > 0
+        assert tree1.n_leaves + tree2.n_leaves == self.tree.n_leaves
+
+        _LOG.debug("tree1 = %s ..." % tree1.compose_newick() [0:200])
+        _LOG.debug("tree2 = %s ..." % tree2.compose_newick() [0:200])
+
+        multilocus_dataset1 = self.multilocus_dataset.sub_alignment(tree1.leaf_node_names())
+        multilocus_dataset2 = self.multilocus_dataset.sub_alignment(tree2.leaf_node_names())
+        sd1 = self._get_subjob_dir(1)
+        sd2 = self._get_subjob_dir(2)
+        PASTAAlignerJob.RECURSION_INDEX += 1
+        configuration = self.configuration()
+
+        # TODO: build this into the superclass method earlier rather than having it split out like this
+        return [PASTAInterruptibleAlignerJob(multilocus_dataset=multilocus_dataset1,
+                                pasta_team=self.pasta_team,
+                                tree=tree1,
+                                tmp_base_dir=self.tmp_base_dir,
+                                tmp_dir_par=sd1,
+                                skip_merge=self.skip_merge,
+                                **configuration),
+                PASTAInterruptibleAlignerJob(multilocus_dataset=multilocus_dataset2,
+                                pasta_team=self.pasta_team,
+                                tree=tree2,
+                                tmp_base_dir=self.tmp_base_dir,
+                                tmp_dir_par=sd2,
+                                skip_merge=self.skip_merge,
+                                **configuration)]
+
+    def get_results(self):
+        self.wait()
+        if self.killed:
+            raise RuntimeError("PastaAligner Job killed")
+        j_list = self.align_job_list
+        if j_list:
+            r = self.multilocus_dataset.new_with_shared_meta()
+            for j in j_list:
+                r.append(j.get_results())
+            #self.align_job_list = None
+            self.finished = True
+        else:
+            j_list = self.merge_job_list
+            if j_list:
+                r = self.multilocus_dataset.new_with_shared_meta()
+                for j in j_list:
+                    r.append(j.get_results())
+                #self.merge_job_list = None
+                self.finished = True
+            else:
+                return None # this can happen if jobs are killed
+        return r

@@ -29,6 +29,7 @@ from subprocess import Popen, PIPE
 from pasta import get_logger, TIMING_LOG
 from pasta.filemgr import open_with_intermediates
 from random import random
+from alignment import Alignment
 
 _LOG = get_logger(__name__)
 
@@ -398,11 +399,23 @@ class FakeJob(JobBase, TickingJob):
     """FakeJob instances are used in cases in which we know have the results of
     an operation, but need to emulate the API of DispatchableJob.
     """
-    def __init__(self, results, **kwargs):
+    def __init__(self, results=None, file_read_job=False,**kwargs):
         JobBase.__init__(self, **kwargs)
         TickingJob.__init__(self)
         self.results = results
-
+        self.result_processor=None
+        self.file_read_job=file_read_job
+        if file_read_job==True:
+            self.scratch_dir=kwargs.get('scratch_dir')
+            self.seqfn=kwargs.get('seqfn')
+            self.alignedfn=kwargs.get('alignedfn')
+            self.datatype=kwargs.get('datatype')
+            self.context_str=kwargs.get('context_str')
+        else:
+            self.scratch_dir=''
+            self.seqfn=''
+            self.alignedfn=''
+            self.datatype=''
     def start(self):
         pass
 
@@ -410,7 +423,27 @@ class FakeJob(JobBase, TickingJob):
         pass
 
     def get_results(self):
-        return self.results
+        if self.file_read_job==None:
+            return self.results
+        else:
+            # self.results=read_internal_alignment(self.alignedfn,)
+            alignment = Alignment()
+            alignment.datatype = self.datatype
+            alignment.read_filepath(self.alignedfn, file_format='FASTA')
+            self.results=alignment
+            return self.results
     
     def kill(self):
         pass
+
+class PickleSafeTickableJob(TickableJob):
+    def __init__(self, *args, **kwargs):
+        TickableJob.__init__(self, *args, **kwargs)
+
+    def make_picklable(self):
+        self._childrenlock=None
+        self._parentslock=None
+
+    def make_unpickled(self):
+        self._childrenlock=Lock()
+        self._parentslock=Lock()

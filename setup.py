@@ -179,6 +179,7 @@ if platform.system() != "Windows":
     # mafft
     #create_symlink(os.path.abspath(os.path.join(pasta.PASTA_SCRIPT_RESOURCES, "mafft")))
     create_symlink(os.path.abspath(os.path.join(pasta.PASTA_SCRIPT_RESOURCES, "hmmeralign")))
+    create_symlink(os.path.abspath(os.path.join(pasta.PASTA_SCRIPT_RESOURCES, "baliphyalign")))
 
     # others
     tools_bin_srcdir = pasta.pasta_tools_dev_dir()

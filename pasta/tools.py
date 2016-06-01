@@ -166,6 +166,12 @@ class Aligner(ExternalTool):
         ExternalTool.__init__(self, name, temp_fs, **kwargs)
         self.user_opts = kwargs.get('args', ' ').split()
 
+    def make_picklable(self):
+        self.temp_fs.make_picklable()
+
+    def make_unpickled(self):
+        self.temp_fs.make_unpickled()
+
     def _prepare_input(self, alignment, **kwargs):
         """Wraps up the writing of raw fasta, creation of temp dir, ... for common aligners.
         Returns directory, input filename, output filename."""
@@ -206,14 +212,77 @@ class Aligner(ExternalTool):
         return job
 
 class CustomAligner(Aligner):
+    '''
+    This is the aligner that is used for an interuptable job
+    '''
     section_name = 'custom aligner'
 
     def __init__(self, name, temp_fs, **kwargs):
         Aligner.__init__(self, name, temp_fs, **kwargs)
+        self.scratch_dir=None
+        self.seqfn=None
+        self.alignedfn=None
 
-    def create_job(self, alignment, guide_tree=None):
-        raise NotImplementedError('User-provided Aligner NOT supported yet.')
+    def create_job(self, alignment=None, guide_tree=None, **kwargs):
+        job_id = kwargs.get('context_str', '') + '_customaligner'
 
+        if alignment.get_num_taxa() == 0:
+            return FakeJob(alignment, context_str=job_id)
+        new_alignment = alignment.unaligned()
+        if new_alignment.get_num_taxa() < 2:
+            return FakeJob(new_alignment, context_str=job_id)
+        scratch_dir, seqfn, alignedfn = self._prepare_input(new_alignment, **kwargs)
+
+        # rpc = lambda : read_internal_alignment(alignedfn,
+        #                                        datatype=alignment.datatype)
+        # self.scratch_dir=scratch_dir
+        # self.seqfn=seqfn
+        # self.alignedfn=alignedfn
+
+        return FakeJob(file_read_job=True,
+                       context_str=job_id,
+                       scratch_dir=scratch_dir,
+                       seqfn=seqfn,
+                       alignedfn=alignedfn,
+                       datatype=alignment.datatype)
+
+    def create_file_read_job(self,**kwargs):
+        return FakeJob(**kwargs)
+    # def get_final_job
+    #     return FakeJob(alignment, context_str=job_id)
+        # raise NotImplementedError('User-provided Aligner NOT supported yet.')
+
+class BaliphyAligner(Aligner):
+    section_name = 'baliphyalign'
+    url = 'http://www.bali-phy.org'
+    is_bundled = False
+
+    def __init__(self, temp_fs, **kwargs):
+        Aligner.__init__(self, 'baliphyalign', temp_fs, **kwargs)
+        # self.exe = 'baliphyalign' #MN Changed
+
+    def create_job(self, alignment, guide_tree=None, **kwargs):
+        job_id = kwargs.get('context_str', '') + '_baliphyalign'
+        #TODO: figure out why time limit is not being passed in here...
+        # time_to_run = kwargs.get('time_limit','12')
+        time_to_run = '0.25' #DEBUG ONLY
+        if alignment.get_num_taxa() == 0:
+            return FakeJob(alignment, context_str=job_id)
+        new_alignment = alignment.unaligned()
+        if new_alignment.get_num_taxa() < 2:
+            return FakeJob(new_alignment, context_str=job_id)
+        scratch_dir, seqfn, alignedfn = self._prepare_input(new_alignment, **kwargs)
+
+        invoc = [self.exe, seqfn, scratch_dir, time_to_run, alignedfn]
+        invoc.extend(self.user_opts)
+        # print ' '.join(invoc)
+
+        return self._finish_standard_job(alignedfn=alignedfn,
+                                        datatype=alignment.datatype,
+                                        invoc=invoc,
+                                        scratch_dir=scratch_dir,
+                                        job_id=job_id,
+                                        delete_temps=kwargs.get('delete_temps', self.delete_temps))
 
 class MafftAligner(Aligner):
     section_name = 'mafft aligner'
@@ -223,8 +292,8 @@ class MafftAligner(Aligner):
 
     def __init__(self, temp_fs, **kwargs):
         Aligner.__init__(self, 'mafft', temp_fs, **kwargs)
-        self.exe = 'mafft-qinsi' #MN Changed
-        # self.exe = 'mafft' #MN Changed
+        # self.exe = 'mafft-qinsi' #MN Changed
+        self.exe = 'mafft' #MN Changed
 
     def create_job(self, alignment, guide_tree=None, **kwargs):
         job_id = kwargs.get('context_str', '') + '_mafft'
@@ -240,15 +309,16 @@ class MafftAligner(Aligner):
             invoc.append(self.exe)
         else:
             invoc.extend([self.exe])
-        print ' '.join(invoc)
+        # print ' '.join(invoc)
 
-        # if len(alignment) <= 200 and new_alignment.max_sequence_length() < 50000: #MN Commented Out
-        #     invoc.extend(['--localpair', '--maxiterate', '1000']) #MN Commented Out
+        if len(alignment) <= 200 and new_alignment.max_sequence_length() < 50000 and self.exe!='mafft-qinsi': #MN Commented Out
+            invoc.extend(['--localpair', '--maxiterate', '1000']) #MN Commented Out
         if '--ep' not in self.user_opts:
             invoc.extend(['--ep', '0.123'])
         invoc.extend(['--quiet'])
         invoc.extend(self.user_opts)
-        invoc.extend(['--thread',str(kwargs.get('num_cpus', 1))])
+        if self.exe!='mafft-qinsi':
+            invoc.extend(['--thread',str(kwargs.get('num_cpus', 1))])
         invoc.append(seqfn)
 
         # The MAFFT job creation is slightly different from the other
@@ -261,6 +331,16 @@ class MafftAligner(Aligner):
                 job_id=job_id,
                 delete_temps=kwargs.get('delete_temps', self.delete_temps),
                 stdout=alignedfn)
+
+class QinsiMafftAligner(MafftAligner):
+    section_name = 'qinsi_mafft'
+    is_bundled = False
+
+    def __init__(self, temp_fs, **kwargs):
+        MafftAligner.__init__(self,temp_fs,**kwargs)
+        self.name='qinsi_mafft'
+        self.exe = 'mafft-qinsi'
+
 
 
 class OpalAligner(Aligner):
@@ -452,6 +532,11 @@ class FakeAligner(Aligner):
         job_id = kwargs.get('context_str', '') + '_fakealigner'
         return FakeJob(alignment, context_str=job_id)
 
+
+    def create_job(self, alignment, guide_tree=None, **kwargs):
+        job_id = kwargs.get('context_str', '') + '_fakealigner'
+        return FakeJob(alignment, context_str=job_id)
+
 class PadAligner(Aligner):
     section_name = 'padaligner'
     url = ''
@@ -602,6 +687,7 @@ class OpalMerger (Merger):
         assert(alignment1.datatype == alignment2.datatype)
 
         invoc = ['java', '-Xmx%dm' % self.max_mem_mb, '-jar', self.exe, '--in', seqfn1, '--in2', seqfn2, '--out', outfn, '--align_method', 'profile']
+        # invoc = ['java', '-Xmx10000m', '-jar', self.exe, '--in', seqfn1, '--in2', seqfn2, '--out', outfn, '--align_method', 'profile']
         invoc.extend(self.user_opts)
         
         return self._finish_standard_job(alignedfn=outfn,
@@ -975,17 +1061,18 @@ class HMMERAlignAligner(Aligner):
                                         delete_temps=kwargs.get('delete_temps', self.delete_temps))
 
 if GLOBAL_DEBUG:
-    AlignerClasses = (ProbalignAligner, Clustalw2Aligner, MafftAligner, PrankAligner, OpalAligner, PadAligner, FakeAligner, CustomAligner, HMMERAlignAligner, ProbconsAligner)
+    AlignerClasses = (ProbalignAligner, Clustalw2Aligner, MafftAligner, QinsiMafftAligner, PrankAligner, OpalAligner, PadAligner, FakeAligner, CustomAligner, HMMERAlignAligner, ProbconsAligner, BaliphyAligner)
     MergerClasses = (MuscleMerger, OpalMerger)
     TreeEstimatorClasses = (FastTree, Randtree, Raxml, FakeTreeEstimator, CustomTreeEstimator)
 else:
-    AlignerClasses = (ProbalignAligner, Clustalw2Aligner, MafftAligner, PrankAligner, OpalAligner, MuscleAligner, CustomAligner, HMMERAlignAligner)
+    AlignerClasses = (ProbalignAligner, Clustalw2Aligner, MafftAligner, QinsiMafftAligner, PrankAligner, OpalAligner, MuscleAligner, CustomAligner, HMMERAlignAligner, BaliphyAligner)
     MergerClasses = (MuscleMerger, OpalMerger, CustomMerger)
     TreeEstimatorClasses = (Raxml, FastTree, CustomTreeEstimator)
 
 def get_aligner_classes():
     classes = list(AlignerClasses)
-    ret = [i for i in classes if not i.section_name.startswith('custom')]
+    # ret = [i for i in classes if not i.section_name.startswith('custom')]
+    ret = [i for i in classes]
     return ret
 
 def get_merger_classes():
@@ -996,6 +1083,7 @@ def get_merger_classes():
 def get_tree_estimator_classes():
     classes = list(TreeEstimatorClasses)
     ret = [i for i in classes if not i.section_name.startswith('custom')]
+    # ret = [i for i in classes]
     return ret
 
 def get_external_tool_classes():

@@ -78,6 +78,7 @@ def set_configuration_from_defaults(cfg):
         x = getattr(cfg, name)
         x.path = path
 
+
 def get_configuration(configfile=None):
     """Returns an instance of PastaUserSettings that reflects the current
     defaults based on:
@@ -89,6 +90,7 @@ def get_configuration(configfile=None):
     set_configuration_from_defaults(cfg)
 
     if os.path.exists(PASTA_SYSTEM_PATHS_CFGFILE):
+        print 'Reading system paths file: %s\n' % PASTA_SYSTEM_PATHS_CFGFILE
         paths_parser = ConfigParser.RawConfigParser()
         try:
             paths_parser.read(PASTA_SYSTEM_PATHS_CFGFILE)
@@ -107,6 +109,7 @@ def get_configuration(configfile=None):
                     sys.stderr.write("Section '%s' not found: using default settings instead.\n" % tool_class.section_name)
 
     if configfile is not None:
+        print 'Reading config file: %s' % configfile
         if os.path.isfile(configfile):
             cfg.read_config_filepath(configfile)
         else:

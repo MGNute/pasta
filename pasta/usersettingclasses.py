@@ -23,6 +23,8 @@ import glob
 from pasta import get_logger
 from pasta.filemgr import open_with_intermediates
 
+# import pdb
+
 _LOG = get_logger(__name__)
 
 def _underscores_to_dashes(s):
@@ -335,8 +337,13 @@ class UserSettingsContainer(object):
         return self.input_seq_filepaths
 
     def read_config_filepath(self, filepath):
+        # pdb.set_trace()
         self._config_parser.read(filepath)
+        # pdb.set_trace()
+        # print self._categories
         for gn in self._categories:
+            # print gn
+            # pdb.set_trace()
             g = getattr(self, gn)
             g.read_config_parser_fields(self._config_parser)
 
@@ -349,7 +356,7 @@ class UserSettingsContainer(object):
         self._config_parser.write(f)
         f.close()
 
-    def create_aligner(self, temp_fs, name=None):
+    def create_aligner(self, temp_fs, name=None, custom=False):
         sate = self.sate
         if name is None:
             name = sate.aligner
@@ -357,6 +364,7 @@ class UserSettingsContainer(object):
         n = name.lower()
         try:
             g = getattr(self, n)
+            # print g.options['path'].__dict__ #TODO: remove DEBUG
         except AttributeError:
             raise RuntimeError("Unrecognized aligner %s" % name)
         p = ''
@@ -370,11 +378,15 @@ class UserSettingsContainer(object):
         from pasta.tools import get_aligner_classes, CustomAligner
         d = g.dict()
 
-        for c in get_aligner_classes():
-            if c.section_name.startswith(n):
-                _LOG.debug("Creating instance of %s" % str(c.__name__))
-                return c(temp_fs=temp_fs, **d)
-        return CustomAligner(name, temp_fs=temp_fs, **d)
+        if custom==False:
+            for c in get_aligner_classes():
+                # print c.section_name
+                if c.section_name.startswith(n):
+                    _LOG.debug("Creating instance of %s" % str(c.__name__))
+                    return c(temp_fs=temp_fs, **d)
+            return CustomAligner(name, temp_fs=temp_fs, **d)
+        else:
+            return CustomAligner(name, temp_fs=temp_fs, **d)
 
     def create_merger(self, temp_fs, name=None):
         sate = self.sate

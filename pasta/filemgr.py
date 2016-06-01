@@ -17,6 +17,26 @@ import shutil
 from threading import Lock
 from pasta import get_logger
 _LOG = get_logger(__name__)
+# import weakref
+#
+#
+# tfs_refs=[]
+# def clean_tfs_refs():
+#     global tfs_refs
+#     inds=[]
+#     for i in range(len(tfs_refs)):
+#         j=tfs_refs[i]()
+#         if j is None:
+#             inds.append(i)
+#         else:
+#             j._directories_created_lock=None
+#     inds.sort(reverse=True)
+#     for i in inds:
+#         tfs_refs.pop(i)
+#     print "removed %s dead TempFS references" % len(inds)
+
+
+
 
 _ILLEGAL_FILENAME_PATTERN = re.compile(r'[^-_a-zA-Z0-9.]')
 def get_safe_filename(filename):
@@ -97,6 +117,14 @@ class TempFS(object):
         self._top_level_temp = None
         self._top_level_temp_real = None
         self._directories_created_lock = Lock()
+        # global tfs_refs
+        # tfs_refs.append(weakref.ref(self))
+
+    def make_picklable(self):
+        self._directories_created_lock=None
+
+    def make_unpickled(self):
+        self._directories_created_lock=Lock()
 
     def _is_already_created(self, real_path):
         self._directories_created_lock.acquire()
@@ -346,16 +374,51 @@ class PastaProducts(object):
         Called after create_output_prefix by PastaProducts.__init__ 
             via PastaProducts.setup() (and nowhere else as of Apr 2012)
         """
+        self.streams_pickle_ref={}
+        self.aln_streams_pickle_ref={}
         assert self.output_prefix
         for stream_name, product_extension in self.meta_product_types.items():
             output_path = self.output_prefix + product_extension
             stream = open_with_intermediates(output_path, "w")
             self._set_stream(stream_name, stream)
+            self.streams_pickle_ref[stream_name]=output_path
         for asi, sf in enumerate(self._output_alignment_suffixes):
             output_path = self.output_prefix + sf
             stream = open_with_intermediates(output_path, "w")
             self.alignment_streams.append(stream)
+            self.aln_streams_pickle_ref[sf]=output_path
             self.input_fpath_alignment_stream_map[self._alignment_suffix_input_fpath_map[sf]] = stream
+
+    def make_picklable(self):
+        for i in self.streams_pickle_ref.keys():
+            a=self._get_stream(i)
+            a.close()
+            self._set_stream(i,None)
+        for i in self.aln_streams_pickle_ref.keys():
+            a=self.input_fpath_alignment_stream_map[self._alignment_suffix_input_fpath_map[i]]
+            a.close()
+            self.input_fpath_alignment_stream_map[self._alignment_suffix_input_fpath_map[i]]=None
+        if len(self.alignment_streams)>0:
+            # print self.alignment_streams
+            alnstrs=range(len(self.alignment_streams))
+            # print alnstrs
+            if len(alnstrs)>1:
+                alnstrs.sort(reverse=True)
+            # print alnstrs
+            for i in alnstrs:
+                self.alignment_streams.pop(i)
+
+
+    def make_unpickled(self):
+        for i in self.streams_pickle_ref.keys():
+            output_path=self.streams_pickle_ref[i]
+            stream=open_with_intermediates(output_path,"a")
+            self._set_stream(i,stream)
+        for i in self.aln_streams_pickle_ref.keys():
+            output_path=self.aln_streams_pickle_ref[i]
+            stream=open_with_intermediates(output_path,"a")
+            self.alignment_streams.append(stream)
+            self.input_fpath_alignment_stream_map[self._alignment_suffix_input_fpath_map[i]] = stream
 
     def create_output_prefix(self):
         output_prefix_stem = os.path.join(self._output_directory, self._job_file_name)

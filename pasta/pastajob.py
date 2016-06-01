@@ -33,13 +33,13 @@ _LOG = get_logger(__name__)
 
 from pasta.treeholder import TreeHolder, resolve_polytomies,\
     read_newick_with_translate
-from pasta.pastaalignerjob import PASTAAlignerJob, PASTAMergerJob
+from pasta.pastaalignerjob import PASTAAlignerJob, PASTAMergerJob, PASTAInterruptibleAlignerJob
 from pasta import get_logger
 from pasta.utility import record_timestamp
 from pasta.scheduler import jobq
 from pasta.filemgr import  TempFS
 from pasta import TEMP_SEQ_ALIGNMENT_TAG, TEMP_TREE_TAG, MESSENGER
-
+import pdb
 
 
 class PastaTeam (object):
@@ -62,14 +62,31 @@ class PastaTeam (object):
             self.merger.max_mem_mb = max_mem_mb
             self.tree_estimator = config.create_tree_estimator(temp_fs=self._temp_fs)
             self.raxml_tree_estimator = config.create_tree_estimator(name='Raxml', temp_fs=self._temp_fs)
+            # self.subsetalignmentjobs=[] #needed for interuptable job
             self.subsets = {} # needed for pastamerger
             self.alignmentjobs = [] # needed for pastamerger
+
+            self.interruptible=False
+            self.config = config
         except AttributeError:
             raise
             raise ValueError("config cannot be None unless all of the tools are passed in.")
     def get_temp_fs(self):
         return self._temp_fs
     temp_fs = property(get_temp_fs)
+
+    def change_aligner_to_custom(self):
+        self.aligner=self.config.create_aligner(temp_fs=self._temp_fs,custom=True)
+
+    def make_picklable(self):
+        self._temp_fs.make_picklable()
+        self.hmmeralign.make_picklable()
+
+    def make_unpickled(self):
+        self._temp_fs.make_unpickled()
+        self.hmmeralign.make_unpickled()
+
+
 
 class AcceptMode:
     BLIND_MODE, NONBLIND_MODE = range(2)
@@ -396,36 +413,7 @@ class PastaJob (TreeHolder):
         self._reset_current_run_settings()
         self._reset_jobs()
 
-        self.start_time = time.time()
-        self.last_improvement_time = self.start_time
-
-        num_non_update_iter = 0
-
-        configuration = self.configuration()
-        # Here we check if the max_subproblem_frac is more stringent than max_subproblem_size
-        frac_max = int(math.ceil(self.max_subproblem_frac*self.tree.n_leaves))
-        if frac_max > self.max_subproblem_size:
-            configuration['max_subproblem_size'] = frac_max
-        MESSENGER.send_info('Max subproblem set to {0}'.format(
-                configuration['max_subproblem_size']))
-        if configuration['max_subproblem_size'] >= self.tree.n_leaves:
-            MESSENGER.send_warning('''\n
-WARNING: you have specified a max subproblem ({0}) that is equal to or greater
-    than the number of taxa ({0}). Thus, the PASTA algorithm will not be invoked
-    under the current configuration (i.e., no tree decomposition will occur).
-    If you did not intend for this behavior (which you probably did not since
-    you are using PASTA) please adjust your settings for the max subproblem and
-    try running PASTA again. If you intended to use PASTA to align your data with
-    the specified aligner tool *without* any decomposition, you can ignore this
-    message.\n'''.format(configuration['max_subproblem_size'],
-                       self.tree.n_leaves))
-        if configuration['max_subproblem_size'] == 1:
-             MESSENGER.send_error(''' You have specified a max subproblem size of 1. PASTA requires a max subproblem size of at least 2.  ''')
-             sys.exit(1)
-
-        delete_iteration_temps = not self.keep_iteration_temporaries
-        delete_realignment_temps = delete_iteration_temps or (not self.keep_realignment_temporaries)
-        configuration['delete_temps'] = delete_realignment_temps
+        configuration, delete_iteration_temps = self.run_prelim_step1()
 
         while self._keep_iterating():
             record_timestamp(os.path.join(tmp_dir_par, 'start_pastaiter_timestamp.txt'))
@@ -462,6 +450,7 @@ WARNING: you have specified a max subproblem ({0}) that is equal to or greater
                 aligner.launch_alignment(break_strategy=break_strategy,
                                          context_str=context_str)                
                 if self.pastamerge:
+                    # pdb.set_trace()
                     _LOG.debug("Build PASTA merge jobs")
                     subsets_tree = self.build_subsets_tree(curr_tmp_dir_par)
                     if len(self.pasta_team.subsets.values()) == 1:
@@ -596,6 +585,39 @@ WARNING: you have specified a max subproblem ({0}) that is equal to or greater
             assert self.tree_str is not None
             assert self.score is not None
 
+        return (None, None)
+
+    def run_prelim_step1(self):
+        self.start_time = time.time()
+        self.last_improvement_time = self.start_time
+        num_non_update_iter = 0
+        configuration = self.configuration()
+        # Here we check if the max_subproblem_frac is more stringent than max_subproblem_size
+        frac_max = int(math.ceil(self.max_subproblem_frac * self.tree.n_leaves))
+        if frac_max > self.max_subproblem_size:
+            configuration['max_subproblem_size'] = frac_max
+        MESSENGER.send_info('Max subproblem set to {0}'.format(
+            configuration['max_subproblem_size']))
+        if configuration['max_subproblem_size'] >= self.tree.n_leaves:
+            MESSENGER.send_warning('''\n
+WARNING: you have specified a max subproblem ({0}) that is equal to or greater
+    than the number of taxa ({0}). Thus, the PASTA algorithm will not be invoked
+    under the current configuration (i.e., no tree decomposition will occur).
+    If you did not intend for this behavior (which you probably did not since
+    you are using PASTA) please adjust your settings for the max subproblem and
+    try running PASTA again. If you intended to use PASTA to align your data with
+    the specified aligner tool *without* any decomposition, you can ignore this
+    message.\n'''.format(configuration['max_subproblem_size'],
+                         self.tree.n_leaves))
+        if configuration['max_subproblem_size'] == 1:
+            MESSENGER.send_error(
+                ''' You have specified a max subproblem size of 1. PASTA requires a max subproblem size of at least 2.  ''')
+            sys.exit(1)
+        delete_iteration_temps = not self.keep_iteration_temporaries
+        delete_realignment_temps = delete_iteration_temps or (not self.keep_realignment_temporaries)
+        configuration['delete_temps'] = delete_realignment_temps
+        return configuration, delete_iteration_temps
+
     def status(self, message):
         if self._status_message_func:
             self._status_message_func(message)
@@ -610,3 +632,282 @@ WARNING: you have specified a max subproblem ({0}) that is equal to or greater
         if j:
             self.tree_build_job = None
             j.kill()
+
+class PastaInterruptibleJob(PastaJob):
+
+    def __init__(self,multilocus_dataset, pasta_team, tree=None, name=None, **kwargs):
+        PastaJob.__init__(self,multilocus_dataset, pasta_team, tree=None, name=None, **kwargs)
+        self.initial=True
+        self.resumable=False
+        self.pasta_progress_status='Job Initialized.'
+        self.conf=None
+        self.delete_iteration_temps=False #hardcoded
+        self.curr_temp_dir_par=None
+        self.context_str=None
+        self.pasta_team.interruptible=True
+        self.pasta_team.change_aligner_to_custom()
+        self.pasta_products=None
+        self.tmp_dir_par=None
+
+    def set_status_messenger(self,**kwargs):
+        self._status_message_func = kwargs.get('status_messages')
+
+    def restore_non_pickled(self,**kwargs):
+        self.set_status_messenger(**kwargs)
+        self._job_lock=Lock()
+        self.pasta_team.make_unpickled()
+        self.pasta_aligner_job.make_unpickled()
+        self.pasta_products.make_unpickled()
+
+    def clean_for_pickling(self):
+        self._status_message_func=None
+        self._job_lock=None
+        self.status_messages=None
+        self.pasta_team.make_picklable()
+        self.pasta_aligner_job.make_picklable()
+        self.pasta_products.make_picklable()
+
+    def run_start(self,tmp_dir_par, pasta_products=None):
+        if self.initial==True:
+            self.pasta_products=pasta_products
+            # This is the start of a new job
+            assert(os.path.exists(tmp_dir_par))
+
+            self._reset_current_run_settings()
+            self._reset_jobs()
+
+            configuration, del_iter_temps = self.run_prelim_step1()
+            self.conf=configuration
+
+
+            delete_iteration_temps=False
+            self.initial=False
+            return self.conf, self.delete_iteration_temps
+        else:
+            return self.conf, self.delete_iteration_temps
+
+    def run(self, tmp_dir_par, pasta_products=None):
+        '''
+        This is to be called from the main pasta method ONLY
+        '''
+        if self.tmp_dir_par==None:
+            self.tmp_dir_par=tmp_dir_par
+        else:
+            tmp_dir_par=self.tmp_dir_par
+
+        configuration, delete_iteration_temps=self.run_start(tmp_dir_par, pasta_products)
+        # self.resumable=False
+
+
+        while self._keep_iterating():
+            if self.resumable==False:
+                record_timestamp(os.path.join(tmp_dir_par, 'start_pastaiter_timestamp.txt'))
+
+                # create a subdirectory for this iteration
+                curr_iter_tmp_dir_par = os.path.join(tmp_dir_par, 'step' + str(self.current_iteration))
+                curr_iter_tmp_dir_par = self.pasta_team.temp_fs.create_subdir(curr_iter_tmp_dir_par)
+                _LOG.debug('directory %s created' % curr_iter_tmp_dir_par)
+                self.break_strategy_index = 0
+                this_iter_score_improved = False
+
+
+                break_strategy =  self._get_break_strategy(self.break_strategy_index)
+                if not bool(break_strategy):
+                    print "breaking from PastaInteruptableJob..."
+                    break
+                context_str = "iter%d-%s" % (self.current_iteration, break_strategy)
+                self.context_str=context_str
+                # create a subdirectory for this iteration/break_strategy
+                curr_tmp_dir_par = os.path.join(curr_iter_tmp_dir_par, break_strategy)
+                curr_tmp_dir_par = self.pasta_team.temp_fs.create_subdir(curr_tmp_dir_par)
+                self.curr_tmp_dir_par=curr_tmp_dir_par
+
+                record_timestamp(os.path.join(curr_tmp_dir_par, 'start_align_timestamp.txt'))
+                # Align (with decomposition...)
+                self.status('Step %d. Realigning with decomposition strategy set to %s' % (self.current_iteration, break_strategy))
+                if self.killed:
+                    raise RuntimeError("PASTA Job killed")
+                tree_for_aligner = self.get_tree_copy()
+                aligner = PASTAInterruptibleAlignerJob(multilocus_dataset=self.multilocus_dataset,
+                                         pasta_team=self.pasta_team,
+                                         tree=tree_for_aligner,
+                                         tmp_base_dir=curr_tmp_dir_par,
+                                         reset_recursion_index=True,
+                                         skip_merge=self.pastamerge,
+                                         **configuration)
+                self.pasta_aligner_job = aligner
+                aligner.launch_alignment(break_strategy=break_strategy,
+                                         context_str=context_str)
+
+                # write jobs list
+                aln_job_list=pasta_products.get_abs_path_for_iter_output(self.current_iteration,'alnjoblist.txt')
+                aln_job_list_file=open(aln_job_list,'w')
+                self.aln_job_list_dict=[]
+                for aj in self.pasta_team.alignmentjobs:
+                    self.aln_job_list_dict.append({
+                        'file_read_job':True,
+                        'alignedfn':aj.alignedfn,
+                        'seqfn': aj.seqfn,
+                        'scratch_dir': aj.scratch_dir,
+                        'datatype': aj.datatype,
+                        'context_str': aj.context_str
+                    })
+                    aln_job_list_file.write('%s,%s,%s\n' % (aj.scratch_dir, aj.seqfn, aj.alignedfn))
+                aln_job_list_file.close()
+                self.resumable=True
+                # self.pasta_team.alignmentjobs=[]
+                return aln_job_list, self.resumable
+            else:
+                # for ajd in self.aln_job_list_dict:
+                #     self.pasta_team.alignmentjobs.append(self.pasta_team.aligner.create_file_read_job(**ajd))
+                # for aj in self.pasta_team.alignmentjobs:
+                #     jobq.put(aj)
+                self.resumable=False
+
+
+
+            if self.resumable==False:
+                # re-initialize some variables from earlier
+                aligner=self.pasta_aligner_job
+                curr_tmp_dir_par=self.curr_tmp_dir_par
+                context_str=self.context_str
+
+
+                if self.pastamerge:
+                    # pdb.set_trace()
+                    _LOG.debug("Build PASTA merge jobs")
+                    subsets_tree = self.build_subsets_tree(curr_tmp_dir_par)
+                    if len(self.pasta_team.subsets.values()) == 1:
+                        # can happen if there are no decompositions
+                        for job in self.pasta_team.alignmentjobs:
+                            jobq.put(job)
+                        new_multilocus_dataset = self.pasta_team.subsets.values()[0].get_results()
+                    else:
+                        pariwise_tmp_dir_par = os.path.join(curr_tmp_dir_par, "pw")
+                        pariwise_tmp_dir_par = self.pasta_team.temp_fs.create_subdir(pariwise_tmp_dir_par)
+                        pmj = PASTAMergerJob(multilocus_dataset=self.multilocus_dataset,
+                                             pasta_team=self.pasta_team,
+                                             tree=subsets_tree,
+                                             tmp_base_dir=pariwise_tmp_dir_par,
+                                             reset_recursion_index=True,
+                                             #delete_temps2=False,
+                                             **configuration)
+
+                        pmj.launch_alignment(context_str=context_str)
+
+                        # Start alignment jobs
+                        for job in self.pasta_team.alignmentjobs:
+                            jobq.put(job)
+
+
+                        new_multilocus_dataset = pmj.get_results()
+                        del pmj
+
+                    self.pasta_team.alignmentjobs = []
+                    self.pasta_team.subsets = {}
+                else:
+                    new_multilocus_dataset = aligner.get_results()
+
+                _LOG.debug("Alignment obtained. Preparing for tree.")
+                self.pasta_aligner_job = None
+                del aligner
+
+                record_timestamp(os.path.join(curr_tmp_dir_par, 'start_treeinference_timestamp.txt'))
+                # Tree inference
+                if self.start_tree_search_from_current:
+                    start_from = self.tree
+                else:
+                    start_from = None
+                self.status('Step %d. Alignment obtained. Tree inference beginning...' % (self.current_iteration))
+                if self.killed:
+                    raise RuntimeError("PASTA Job killed")
+
+                tbj = self.pasta_team.tree_estimator.create_job(new_multilocus_dataset,
+                                                               starting_tree=start_from,
+                                                               num_cpus=self.num_cpus,
+                                                               context_str=context_str + " tree",
+                                                               tmp_dir_par=curr_tmp_dir_par,
+                                                               delete_temps=delete_iteration_temps,
+                                                               pasta_products=pasta_products,
+                                                               step_num=self.current_iteration,
+                                                               mask_gappy_sites = self.mask_gappy_sites)
+                prev_curr_align = self.curr_iter_align_tmp_filename
+                prev_curr_tree = self.curr_iter_tree_tmp_filename
+                self.curr_iter_align_tmp_filename = pasta_products.get_abs_path_for_iter_output(self.current_iteration, TEMP_SEQ_ALIGNMENT_TAG, allow_existing=True)
+                self.curr_iter_tree_tmp_filename = pasta_products.get_abs_path_for_iter_output(self.current_iteration, TEMP_TREE_TAG, allow_existing=True)
+
+                self.tree_build_job = tbj
+                jobq.put(tbj)
+                new_score, new_tree_str = tbj.get_results()
+                self.tree_build_job = None
+                del tbj
+                if self.killed:
+                    raise RuntimeError("PASTA Job killed")
+
+                record_timestamp(os.path.join(curr_tmp_dir_par, 'end_treeinference_timestamp.txt'))
+                curr_timestamp = time.time()
+                accept_iteration = False
+
+                if self.score is None:
+                    self.score = new_score
+
+                if self.best_score is None or new_score > self.best_score:
+                    self.store_optimum_results(new_multilocus_dataset,
+                            new_tree_str,
+                            new_score,
+                            curr_timestamp)
+                    this_iter_score_improved = True
+                    accept_iteration = True
+
+                if self._get_accept_mode(new_score=new_score, break_strategy_index=self.break_strategy_index) == AcceptMode.BLIND_MODE:
+                    if self.blind_mode_is_final:
+                        self.is_stuck_in_blind = True
+                        if self.switch_to_blind_timestamp is None:
+                            if self._blindmode_trigger:
+                                _LOG.debug("Blind runmode trigger = %s" % self._blindmode_trigger)
+                            self.switch_to_blind_iter = self.current_iteration
+                            self.switch_to_blind_timestamp = curr_timestamp
+                    accept_iteration = True
+
+                if accept_iteration:
+                    self.score = new_score
+                    self.multilocus_dataset = new_multilocus_dataset
+                    self.tree_str = new_tree_str
+                    if this_iter_score_improved:
+                        self.status('realignment accepted and score improved.')
+                    else:
+                        self.status('realignment accepted and despite the score not improving.')
+                    # we do not want to continue to try different breaking strategies for this iteration so we break
+                    self.status('current score: %s, best score: %s' % (self.score, self.best_score) )
+                    # break
+                else:
+                    self.status('realignment NOT accepted.')
+                    self.curr_iter_align_tmp_filename = prev_curr_align
+                    self.curr_iter_tree_tmp_filename = prev_curr_tree
+
+                # break_strategy_index += 1
+
+                # self.status('current score: %s, best score: %s' % (self.score, self.best_score) )
+
+            if not this_iter_score_improved:
+                self.num_iter_since_imp += 1
+            self.current_iteration += 1
+
+        if self.resumable==False:
+            if self._termination_trigger:
+                _LOG.debug("Termination trigger = %s" % self._termination_trigger)
+            record_timestamp(os.path.join(tmp_dir_par, 'end_pastaiter_timestamp.txt'))
+
+            ### TODO: if configuration is 'return_final_iter_TreeAndAlignpair', then skip the following three lines
+            if not self.return_final_tree_and_alignment:
+                self.multilocus_dataset = self.best_multilocus_dataset.new_with_shared_meta()
+                for locus_alignment in self.best_multilocus_dataset:
+                    self.multilocus_dataset.append(copy.copy(locus_alignment))
+                self.tree_str = self.best_tree_str
+                self.score = self.best_score
+            else:
+                assert self.multilocus_dataset is not None
+                assert self.tree_str is not None
+                assert self.score is not None
+
+            return (None, None)
